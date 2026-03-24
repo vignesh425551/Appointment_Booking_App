@@ -18,6 +18,12 @@ LANGUAGE_CONFIG = {
     "Hindi": {"code": "hi-IN", "speaker": "manisha"},
     "Telugu": {"code": "te-IN", "speaker": "abhilash"},
 }
+SAMPLE_PHONES = [
+    "5551000001",
+    "5551000002",
+    "5551000003",
+    "5551000004",
+]
 
 SYMPTOM_DEPARTMENT_HINTS = {
     "Cardiology": ["chest pain", "palpitations", "heart", "shortness of breath", "bp"],
@@ -191,12 +197,44 @@ def pick_doctor_id(user_text: str, doctors: list[tuple[int, str]]) -> int | None
     return None
 
 
-def pick_slot_id(user_text: str, slot_options: list[tuple[int, object]]) -> int | None:
+def pick_slot_id(user_text: str, slots: list[tuple[int, object, object]]) -> int | None:
     value = normalize(user_text).replace(".", ":")
-    for slot_id, time_value in slot_options:
-        t12 = time_value.strftime("%I:%M %p").lower()
-        t24 = time_value.strftime("%H:%M").lower()
-        if t12 in value or t24 in value:
+    value = re.sub(r"\b(\d{1,2})\s*(am|pm)\b", r"\1:00 \2", value)
+
+    month_map = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+        "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+        "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10, "october": 10,
+        "nov": 11, "november": 11, "dec": 12, "december": 12,
+    }
+    day_match = re.search(r"\b([0-3]?\d)(?:st|nd|rd|th)?\b", value)
+    requested_day = int(day_match.group(1)) if day_match else None
+    requested_month = None
+    for key, month in month_map.items():
+        if re.search(rf"\b{key}\b", value):
+            requested_month = month
+            break
+
+    filtered_slots = []
+    if requested_day:
+        for slot_id, date_value, time_value in slots:
+            if date_value.day == requested_day and (requested_month is None or date_value.month == requested_month):
+                filtered_slots.append((slot_id, date_value, time_value))
+    if not filtered_slots:
+        filtered_slots = slots
+
+    for slot_id, _, time_value in filtered_slots:
+        hour_24 = time_value.strftime("%H")
+        minute = time_value.strftime("%M")
+        hour_12 = str((time_value.hour % 12) or 12)
+        am_pm = "am" if time_value.hour < 12 else "pm"
+        candidates = {
+            f"{hour_24}:{minute}",
+            hour_24,
+            f"{hour_12}:{minute} {am_pm}",
+            f"{hour_12} {am_pm}",
+        }
+        if any(candidate in value for candidate in candidates):
             return slot_id
     return None
 
@@ -236,6 +274,9 @@ def main():
         st.subheader("Session")
         st.selectbox("Language", LANGUAGES, key="language")
         st.toggle("Voice mode", key="voice_mode", help="Use microphone input and spoken responses.")
+        st.caption("Sample mobile numbers")
+        for sample_phone in SAMPLE_PHONES:
+            st.code(sample_phone)
         if st.button("Reset Conversation", use_container_width=True):
             reset_flow()
             st.rerun()
@@ -256,10 +297,12 @@ def main():
 
     st.subheader("Conversational Assistant")
     st.caption("Use one Talk flow: type or record, then click Talk.")
+    st.info("Login hint: try sample numbers 5551000001, 5551000002, 5551000003, or 5551000004.")
 
     if not st.session_state.chat_history:
         opening = (
-            "Hello! Please share your phone number to login and start booking."
+            "Hello! Please share your phone number to login and start booking. "
+            "You can use sample numbers like 5551000001 or 5551000002."
             if st.session_state.dialog_stage == "awaiting_login"
             else "Welcome back. Say 'direct booking' or 'symptoms'."
         )
@@ -302,7 +345,11 @@ def main():
                     sarvam,
                 )
             else:
-                assistant_reply("I could not find that phone number. Please say or type a valid registered number.", sarvam)
+                assistant_reply(
+                    "I could not find that phone number. Please say or type a valid number. "
+                    "Try sample numbers like 5551000001, 5551000002, or 5551000003.",
+                    sarvam,
+                )
 
         elif st.session_state.dialog_stage == "awaiting_mode":
             if "symptom" in msg:
@@ -371,10 +418,17 @@ def main():
         elif st.session_state.dialog_stage == "awaiting_slot":
             doc_id = st.session_state.selected_doctor_id
             slots = get_available_slots(doc_id) if doc_id else []
-            slot_options = [(slot_id, time_value) for slot_id, _, time_value in slots]
-            slot_id = pick_slot_id(user_text, slot_options)
+            slot_id = pick_slot_id(user_text, slots)
             if slot_id is None:
-                assistant_reply("I could not understand the time. Please say a slot like 10:00 AM.", sarvam)
+                examples = ", ".join(
+                    f"{date_value.strftime('%d %b')} {time_value.strftime('%I:%M %p')}"
+                    for _, date_value, time_value in slots[:3]
+                )
+                assistant_reply(
+                    "I could not match that slot. Please say date and time like: "
+                    + examples,
+                    sarvam,
+                )
             else:
                 st.session_state.selected_slot_id = slot_id
                 st.session_state.dialog_stage = "awaiting_confirmation"
