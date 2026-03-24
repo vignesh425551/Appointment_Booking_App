@@ -1,14 +1,23 @@
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime
+import os
+import re
 
 import streamlit as st
 
+st.set_page_config(page_title="Healthcare Appointment Bot", page_icon="🩺", layout="centered")
+
 from db.models import Appointment, Department, Doctor, Slot, User
 from db.session import SessionLocal
+from utils.sarvam_integration import SarvamHandler
 
 
 LANGUAGES = ["English", "Hindi", "Telugu"]
+LANGUAGE_CONFIG = {
+    "English": {"code": "en-IN", "speaker": "manisha"},
+    "Hindi": {"code": "hi-IN", "speaker": "manisha"},
+    "Telugu": {"code": "te-IN", "speaker": "abhilash"},
+}
 
 SYMPTOM_DEPARTMENT_HINTS = {
     "Cardiology": ["chest pain", "palpitations", "heart", "shortness of breath", "bp"],
@@ -88,68 +97,154 @@ def book_appointment(user_id: int, doctor_id: int, slot_id: int):
 
 
 def reset_flow():
+    st.session_state.dialog_stage = "awaiting_login"
+    st.session_state.user_phone = ""
+    st.session_state.user_name = ""
+    st.session_state.user_id = None
+    st.session_state.mode = None
+    st.session_state.symptoms = ""
     st.session_state.selected_department_id = None
     st.session_state.selected_doctor_id = None
     st.session_state.selected_slot_id = None
-    st.session_state.symptoms = ""
     st.session_state.booking_status = ""
+    st.session_state.chat_history = []
+
+
+def init_sarvam(language: str):
+    api_key = os.getenv("SARVAM_API_KEY")
+    if not api_key:
+        return None
+    return SarvamHandler(language_config=LANGUAGE_CONFIG.get(language, LANGUAGE_CONFIG["English"]))
+
+
+def transcribe_audio_input(audio_file, sarvam: SarvamHandler):
+    if audio_file is None or sarvam is None:
+        return ""
+    transcript = sarvam.speech_to_text_from_bytes(
+        audio_bytes=audio_file.getvalue(),
+        mime_type=getattr(audio_file, "type", None) or "audio/wav",
+        filename=getattr(audio_file, "name", None) or "audio.wav",
+    )
+    if transcript.startswith("[ERROR:"):
+        st.error(f"Voice transcription failed: {transcript}")
+        return ""
+    return transcript.strip()
+
+
+def speak_text(text: str, sarvam: SarvamHandler):
+    if not text or sarvam is None:
+        return
+    audio_path = sarvam.text_to_speech(text)
+    if not audio_path:
+        st.warning("Could not generate speech audio.")
+        return
+    with open(audio_path, "rb") as audio_file:
+        st.audio(audio_file.read(), format="audio/wav")
+
+
+def get_audio_input_widget(label: str, key: str):
+    """Use audio_input when available, else fallback to file uploader."""
+    if hasattr(st, "audio_input"):
+        return st.audio_input(label, key=key)
+    return st.file_uploader(
+        f"{label} (upload .wav/.mp3/.m4a)",
+        type=["wav", "mp3", "m4a"],
+        key=key,
+        accept_multiple_files=False,
+    )
+
+
+def assistant_reply(text: str, sarvam: SarvamHandler | None):
+    st.session_state.chat_history.append(("assistant", text))
+    if st.session_state.voice_mode:
+        speak_text(text, sarvam)
+
+
+def normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def is_yes(text: str) -> bool:
+    value = normalize(text)
+    return value in {"yes", "y", "haan", "ha", "avunu", "ok", "okay", "confirm"}
+
+
+def is_no(text: str) -> bool:
+    value = normalize(text)
+    return value in {"no", "n", "cancel", "vaddu", "nahi"}
+
+
+def pick_department_id(user_text: str, departments: list[tuple[int, str]]) -> int | None:
+    value = normalize(user_text)
+    for dep_id, dep_name in departments:
+        if normalize(dep_name) in value:
+            return dep_id
+    return None
+
+
+def pick_doctor_id(user_text: str, doctors: list[tuple[int, str]]) -> int | None:
+    value = normalize(user_text).replace("doctor ", "").replace("dr ", "")
+    for doc_id, doc_name in doctors:
+        doc_clean = normalize(doc_name).replace("dr.", "").replace("dr ", "").strip()
+        if doc_clean and doc_clean in value:
+            return doc_id
+    return None
+
+
+def pick_slot_id(user_text: str, slot_options: list[tuple[int, object]]) -> int | None:
+    value = normalize(user_text).replace(".", ":")
+    for slot_id, time_value in slot_options:
+        t12 = time_value.strftime("%I:%M %p").lower()
+        t24 = time_value.strftime("%H:%M").lower()
+        if t12 in value or t24 in value:
+            return slot_id
+    return None
 
 
 def main():
-    st.set_page_config(page_title="Healthcare Appointment Bot", page_icon="🩺", layout="centered")
     st.title("🩺 Healthcare Appointment UI")
     st.caption("Streamlit interface for department-based appointment booking.")
 
     if "language" not in st.session_state:
         st.session_state.language = LANGUAGES[0]
+    if "voice_mode" not in st.session_state:
+        st.session_state.voice_mode = False
+    if "dialog_stage" not in st.session_state:
+        st.session_state.dialog_stage = "awaiting_login"
     if "user_phone" not in st.session_state:
         st.session_state.user_phone = ""
     if "user_name" not in st.session_state:
         st.session_state.user_name = ""
     if "user_id" not in st.session_state:
         st.session_state.user_id = None
+    if "mode" not in st.session_state:
+        st.session_state.mode = None
+    if "symptoms" not in st.session_state:
+        st.session_state.symptoms = ""
     if "selected_department_id" not in st.session_state:
         st.session_state.selected_department_id = None
     if "selected_doctor_id" not in st.session_state:
         st.session_state.selected_doctor_id = None
     if "selected_slot_id" not in st.session_state:
         st.session_state.selected_slot_id = None
-    if "symptoms" not in st.session_state:
-        st.session_state.symptoms = ""
     if "booking_status" not in st.session_state:
         st.session_state.booking_status = ""
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
 
     with st.sidebar:
         st.subheader("Session")
         st.selectbox("Language", LANGUAGES, key="language")
-        if st.button("Reset Booking Flow", use_container_width=True):
+        st.toggle("Voice mode", key="voice_mode", help="Use microphone input and spoken responses.")
+        if st.button("Reset Conversation", use_container_width=True):
             reset_flow()
             st.rerun()
         if st.session_state.user_name:
             st.success(f"Signed in as {st.session_state.user_name}")
 
-    st.subheader("1) Login")
-    phone = st.text_input("Phone Number", value=st.session_state.user_phone, placeholder="e.g. 5551000001")
-    if st.button("Login"):
-        user = get_user_by_phone(phone.strip())
-        if user:
-            st.session_state.user_phone = user.phone
-            st.session_state.user_name = user.name
-            st.session_state.user_id = user.id
-            st.success(f"Welcome, {user.name}!")
-        else:
-            st.error("No user found for this phone number. Seed the database or use a valid number.")
-
-    if not st.session_state.user_id:
-        st.info("Login to continue booking.")
-        return
-
-    st.subheader("2) Department selection")
-    mode = st.radio(
-        "Choose how you want to proceed",
-        options=["Direct booking", "Book via symptoms"],
-        horizontal=True,
-    )
+    sarvam = init_sarvam(st.session_state.language)
+    if st.session_state.voice_mode and sarvam is None:
+        st.warning("Voice mode needs `SARVAM_API_KEY` in your environment.")
 
     departments = get_departments()
     if not departments:
@@ -157,80 +252,169 @@ def main():
         return
 
     department_names = [name for _, name in departments]
+    department_map = {dep_id: dep_name for dep_id, dep_name in departments}
 
-    if mode == "Book via symptoms":
-        st.session_state.symptoms = st.text_area(
-            "Describe your symptoms",
-            value=st.session_state.symptoms,
-            placeholder="e.g. chest pain and shortness of breath since morning",
+    st.subheader("Conversational Assistant")
+    st.caption("Use one Talk flow: type or record, then click Talk.")
+
+    if not st.session_state.chat_history:
+        opening = (
+            "Hello! Please share your phone number to login and start booking."
+            if st.session_state.dialog_stage == "awaiting_login"
+            else "Welcome back. Say 'direct booking' or 'symptoms'."
         )
-        if st.button("Suggest department"):
+        st.session_state.chat_history.append(("assistant", opening))
+        if st.session_state.voice_mode:
+            speak_text(opening, sarvam)
+
+    for role, message in st.session_state.chat_history:
+        with st.chat_message(role):
+            st.write(message)
+
+    text_input = st.text_input("Your message", placeholder="Type here or use microphone below...")
+    audio_input = get_audio_input_widget("Voice input", "talk_audio_input")
+
+    if st.button("Talk", type="primary"):
+        user_text = text_input.strip()
+        if audio_input is not None:
+            transcript = transcribe_audio_input(audio_input, sarvam)
+            if transcript:
+                user_text = transcript
+
+        if not user_text:
+            st.warning("Please type or record something before pressing Talk.")
+            return
+
+        st.session_state.chat_history.append(("user", user_text))
+        msg = normalize(user_text)
+
+        if st.session_state.dialog_stage == "awaiting_login":
+            digits = "".join(ch for ch in user_text if ch.isdigit())
+            phone = digits if len(digits) >= 10 else user_text.strip()
+            user = get_user_by_phone(phone)
+            if user:
+                st.session_state.user_phone = user.phone
+                st.session_state.user_name = user.name
+                st.session_state.user_id = user.id
+                st.session_state.dialog_stage = "awaiting_mode"
+                assistant_reply(
+                    f"Welcome {user.name}. Say 'direct booking' to pick department, or 'symptoms' to describe your issue.",
+                    sarvam,
+                )
+            else:
+                assistant_reply("I could not find that phone number. Please say or type a valid registered number.", sarvam)
+
+        elif st.session_state.dialog_stage == "awaiting_mode":
+            if "symptom" in msg:
+                st.session_state.mode = "symptoms"
+                st.session_state.dialog_stage = "awaiting_symptoms"
+                assistant_reply("Please describe your symptoms.", sarvam)
+            elif "direct" in msg or "booking" in msg:
+                st.session_state.mode = "direct"
+                st.session_state.dialog_stage = "awaiting_department"
+                assistant_reply("Please choose a department: " + ", ".join(department_names), sarvam)
+            else:
+                assistant_reply("Please say either 'direct booking' or 'symptoms'.", sarvam)
+
+        elif st.session_state.dialog_stage == "awaiting_symptoms":
+            st.session_state.symptoms = user_text
             suggestion = infer_department_from_symptoms(st.session_state.symptoms, department_names)
             st.session_state.selected_department_id = next(dep_id for dep_id, dep_name in departments if dep_name == suggestion)
-            st.success(f"Suggested department: {suggestion}")
+            st.session_state.dialog_stage = "awaiting_doctor"
+            assistant_reply(
+                f"Based on symptoms, suggested department is {suggestion}. Now say doctor name.",
+                sarvam,
+            )
 
-    current_department_id = st.session_state.selected_department_id or departments[0][0]
-    department_map = {dep_id: dep_name for dep_id, dep_name in departments}
-    chosen_department_id = st.selectbox(
-        "Department",
-        options=[dep_id for dep_id, _ in departments],
-        format_func=lambda dep_id: department_map[dep_id],
-        index=[dep_id for dep_id, _ in departments].index(current_department_id),
-    )
-    st.session_state.selected_department_id = chosen_department_id
+        elif st.session_state.dialog_stage == "awaiting_department":
+            dep_id = pick_department_id(user_text, departments)
+            if dep_id is None:
+                assistant_reply("I could not match that department. Available: " + ", ".join(department_names), sarvam)
+            else:
+                st.session_state.selected_department_id = dep_id
+                st.session_state.dialog_stage = "awaiting_doctor"
+                doctors = get_doctors(dep_id)
+                if not doctors:
+                    assistant_reply("No doctors are available in that department. Please choose another department.", sarvam)
+                    st.session_state.dialog_stage = "awaiting_department"
+                else:
+                    doctor_names = [doc_name for _, doc_name in doctors]
+                    assistant_reply("Available doctors: " + ", ".join(doctor_names) + ". Say a doctor name.", sarvam)
 
-    st.subheader("3) Doctor and slot selection")
-    doctors = get_doctors(chosen_department_id)
-    if not doctors:
-        st.warning("No doctors available in this department.")
-        return
+        elif st.session_state.dialog_stage == "awaiting_doctor":
+            dep_id = st.session_state.selected_department_id
+            doctors = get_doctors(dep_id) if dep_id else []
+            doc_id = pick_doctor_id(user_text, doctors)
+            if doc_id is None:
+                doctor_names = [doc_name for _, doc_name in doctors]
+                assistant_reply("I could not match doctor. Say one of: " + ", ".join(doctor_names), sarvam)
+            else:
+                st.session_state.selected_doctor_id = doc_id
+                st.session_state.dialog_stage = "awaiting_slot"
+                slots = get_available_slots(doc_id)
+                if not slots:
+                    assistant_reply("No slots available for this doctor. Say another doctor name.", sarvam)
+                    st.session_state.dialog_stage = "awaiting_doctor"
+                else:
+                    grouped_slots = defaultdict(list)
+                    for slot_id, date_value, time_value in slots:
+                        grouped_slots[date_value].append((slot_id, time_value))
+                    lines = []
+                    for date_value in sorted(grouped_slots.keys())[:5]:
+                        times = ", ".join(tm.strftime("%I:%M %p") for _, tm in grouped_slots[date_value][:5])
+                        lines.append(f"{date_value.strftime('%d %b %Y')}: {times}")
+                    assistant_reply(
+                        "Available slots are:\n" + "\n".join(lines) + "\nSay preferred time (example: 10:00 AM).",
+                        sarvam,
+                    )
 
-    doctor_map = {doc_id: doc_name for doc_id, doc_name in doctors}
-    chosen_doctor_id = st.selectbox(
-        "Doctor",
-        options=[doc_id for doc_id, _ in doctors],
-        format_func=lambda doc_id: doctor_map[doc_id],
-    )
-    st.session_state.selected_doctor_id = chosen_doctor_id
+        elif st.session_state.dialog_stage == "awaiting_slot":
+            doc_id = st.session_state.selected_doctor_id
+            slots = get_available_slots(doc_id) if doc_id else []
+            slot_options = [(slot_id, time_value) for slot_id, _, time_value in slots]
+            slot_id = pick_slot_id(user_text, slot_options)
+            if slot_id is None:
+                assistant_reply("I could not understand the time. Please say a slot like 10:00 AM.", sarvam)
+            else:
+                st.session_state.selected_slot_id = slot_id
+                st.session_state.dialog_stage = "awaiting_confirmation"
+                selected_slot = next((s for s in slots if s[0] == slot_id), None)
+                doctor_name = dict(get_doctors(st.session_state.selected_department_id)).get(doc_id, "selected doctor")
+                if selected_slot:
+                    _, date_value, time_value = selected_slot
+                    assistant_reply(
+                        f"Please confirm booking with {doctor_name} on {date_value.strftime('%d %b %Y')} at {time_value.strftime('%I:%M %p')}. Say yes or no.",
+                        sarvam,
+                    )
+                else:
+                    assistant_reply("Please confirm booking. Say yes or no.", sarvam)
 
-    slots = get_available_slots(chosen_doctor_id)
-    if not slots:
-        st.warning("No available slots for this doctor.")
-        return
+        elif st.session_state.dialog_stage == "awaiting_confirmation":
+            if is_yes(msg):
+                ok, message = book_appointment(
+                    user_id=st.session_state.user_id,
+                    doctor_id=st.session_state.selected_doctor_id,
+                    slot_id=st.session_state.selected_slot_id,
+                )
+                st.session_state.booking_status = message
+                if ok:
+                    st.session_state.dialog_stage = "completed"
+                    assistant_reply("Appointment booked successfully. Say 'restart' for a new booking.", sarvam)
+                else:
+                    st.session_state.dialog_stage = "awaiting_slot"
+                    assistant_reply(f"{message} Please choose another slot.", sarvam)
+            elif is_no(msg):
+                st.session_state.dialog_stage = "awaiting_slot"
+                assistant_reply("Booking cancelled. Please say another preferred time.", sarvam)
+            else:
+                assistant_reply("Please say yes to confirm or no to cancel.", sarvam)
 
-    grouped_slots = defaultdict(list)
-    for slot_id, date_value, time_value in slots:
-        grouped_slots[date_value].append((slot_id, time_value))
-
-    date_options = sorted(grouped_slots.keys())
-    selected_date = st.selectbox("Date", options=date_options, format_func=lambda d: d.strftime("%d %b %Y"))
-
-    slot_options = grouped_slots[selected_date]
-    slot_map = {slot_id: time_value.strftime("%I:%M %p") for slot_id, time_value in slot_options}
-    chosen_slot_id = st.selectbox(
-        "Time",
-        options=[slot_id for slot_id, _ in slot_options],
-        format_func=lambda slot_id: slot_map[slot_id],
-    )
-    st.session_state.selected_slot_id = chosen_slot_id
-
-    doctor_name = doctor_map[chosen_doctor_id]
-    selected_time = slot_map[chosen_slot_id]
-    st.info(
-        f"Confirm booking for **{doctor_name}** on **{selected_date.strftime('%d %b %Y')}** at **{selected_time}**."
-    )
-
-    if st.button("Book appointment", type="primary"):
-        ok, message = book_appointment(
-            user_id=st.session_state.user_id,
-            doctor_id=chosen_doctor_id,
-            slot_id=chosen_slot_id,
-        )
-        st.session_state.booking_status = message
-        if ok:
-            st.success(message)
-        else:
-            st.error(message)
+        elif st.session_state.dialog_stage == "completed":
+            if "restart" in msg or "new" in msg:
+                reset_flow()
+                assistant_reply("Conversation reset. Please share phone number to login.", sarvam)
+            else:
+                assistant_reply("Booking is complete. Say 'restart' to begin a new booking.", sarvam)
 
     if st.session_state.booking_status:
         st.caption(f"Last status: {st.session_state.booking_status}")

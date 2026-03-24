@@ -39,7 +39,7 @@ class SarvamHandler:
                     files = {'file': ('audio.wav', f, 'audio/wav')}
                     data = {
                         'language_code': self.language['code'],
-                        'model': 'saarika:v2',
+                        'model': 'saarika:v2.5',
                         'with_timestamps': 'false'
                     }
                     headers = {
@@ -54,6 +54,55 @@ class SarvamHandler:
                     return "[ERROR: STT Failed]"
             except Exception as e:
                 return f"[ERROR: {e}]"
+
+    def speech_to_text_from_bytes(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = "audio/wav",
+        filename: str = "audio.wav"
+    ):
+        """Transcribe browser-recorded audio bytes via Sarvam STT API."""
+        try:
+            if not audio_bytes:
+                return "[ERROR: Empty audio input]"
+
+            data = {
+                'language_code': self.language['code'],
+                'model': 'saarika:v2.5',
+                'with_timestamps': 'false'
+            }
+            headers = {
+                "api-subscription-key": SARVAM_API_KEY,
+                "Accept": "application/json"
+            }
+
+            # Browser capture can vary by codec/container. Try likely combinations.
+            attempts = [
+                (filename, mime_type),
+                ("audio.wav", "audio/wav"),
+                ("audio.webm", "audio/webm"),
+                ("audio.ogg", "audio/ogg"),
+                ("audio.mp3", "audio/mpeg"),
+            ]
+
+            last_error = ""
+            for attempt_name, attempt_mime in attempts:
+                files = {'file': (attempt_name, audio_bytes, attempt_mime)}
+                response = requests.post(
+                    "https://api.sarvam.ai/speech-to-text",
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    payload = response.json()
+                    return payload.get("transcript", "").strip()
+                last_error = f"{response.status_code}: {response.text[:250]}"
+
+            return f"[ERROR: STT Failed {last_error}]"
+        except Exception as e:
+            return f"[ERROR: {e}]"
 
     def text_to_speech(self, text):
         try:

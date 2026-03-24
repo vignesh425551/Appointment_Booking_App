@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import tomllib
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -11,14 +13,23 @@ def resolve_database_url() -> str:
     if env_url:
         return env_url
 
-    try:
-        import streamlit as st
-
-        secrets_url = st.secrets.get("DATABASE_URL")
-        if secrets_url:
-            return secrets_url
-    except Exception:
-        pass
+    # Read Streamlit secrets files directly to avoid calling Streamlit APIs
+    # before st.set_page_config() in the app script.
+    candidate_paths = [
+        Path.home() / ".streamlit" / "secrets.toml",
+        Path.cwd() / ".streamlit" / "secrets.toml",
+    ]
+    for secrets_path in candidate_paths:
+        if not secrets_path.exists():
+            continue
+        try:
+            with secrets_path.open("rb") as file:
+                data = tomllib.load(file)
+            secrets_url = data.get("DATABASE_URL")
+            if secrets_url:
+                return secrets_url
+        except Exception:
+            continue
 
     return "postgresql://postgres:189014800%40Postgres@localhost:5432/app_booking"
 
