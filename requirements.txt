@@ -1,0 +1,8 @@
+crewai
+requests
+litellm
+python-dotenv
+numpy
+psycopg2-binary
+SQLAlchemy
+streamlit

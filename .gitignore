@@ -1,0 +1,8 @@
+project/
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
+logs/
+sessions/
+.vscode/
