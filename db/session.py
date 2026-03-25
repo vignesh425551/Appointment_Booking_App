@@ -51,6 +51,11 @@ def _find_database_url_in_toml(data: object) -> str | None:
 def resolve_database_url() -> tuple[str, str]:
     env_url = os.getenv("DATABASE_URL")
     if env_url:
+        # If the env URL points to localhost it will never work on Streamlit Cloud.
+        # Tag the source so the UI can warn the user to fix their secret.
+        parsed_env = urlparse(env_url)
+        if parsed_env.hostname in ("localhost", "127.0.0.1", "::1"):
+            return env_url, "env_localhost"
         return env_url, "env"
 
     built = _build_postgres_url_from_parts()

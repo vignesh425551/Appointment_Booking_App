@@ -296,6 +296,15 @@ def main():
         )
         return
 
+    if DATABASE_URL_SOURCE == "env_localhost":
+        st.error(
+            "⚠️ Your `DATABASE_URL` secret points to **localhost**, which is unavailable on Streamlit Cloud. "
+            "Please update it in **App Settings → Secrets** to a real hosted PostgreSQL URL "
+            "(e.g. from Neon, Supabase, or Railway)."
+        )
+        st.code('DATABASE_URL = "postgresql://user:password@your-cloud-host:5432/dbname?sslmode=require"', language="toml")
+        return
+
     try:
         departments = get_departments()
     except SAOperationalError as e:
