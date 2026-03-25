@@ -1,6 +1,6 @@
-crewai==0.11.2
+crewai==1.11.1
 requests
-litellm==1.40.8
+litellm==1.82.6
 tiktoken==0.12.0
 python-dotenv
 numpy
