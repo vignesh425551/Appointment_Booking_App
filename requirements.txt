@@ -1,7 +1,8 @@
-crewai==1.11.1
+crewai==0.119.0
 requests
-litellm==1.82.6
+litellm==1.68.0
 tiktoken==0.12.0
+pydantic-core==2.41.5
 python-dotenv
 numpy
 psycopg2-binary
