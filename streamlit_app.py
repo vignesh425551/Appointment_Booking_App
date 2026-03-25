@@ -8,7 +8,7 @@ import streamlit as st
 st.set_page_config(page_title="Healthcare Appointment Bot", page_icon="🩺", layout="centered")
 
 from db.models import Appointment, Department, Doctor, Slot, User
-from db.session import SessionLocal
+from db.session import DATABASE_URL_SOURCE, SessionLocal
 from utils.sarvam_integration import SarvamHandler
 
 
@@ -286,6 +286,14 @@ def main():
     sarvam = init_sarvam(st.session_state.language)
     if st.session_state.voice_mode and sarvam is None:
         st.warning("Voice mode needs `SARVAM_API_KEY` in your environment.")
+
+    if DATABASE_URL_SOURCE == "fallback":
+        st.error(
+            "Database connection is not configured for this environment. "
+            "Set `DATABASE_URL` in Streamlit Cloud app secrets (see `.streamlit/secrets.toml.example`) "
+            "or set `DB_HOST/DB_NAME/DB_USER/DB_PASSWORD` env vars."
+        )
+        return
 
     departments = get_departments()
     if not departments:
