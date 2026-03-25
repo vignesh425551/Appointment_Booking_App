@@ -1,6 +1,6 @@
 crewai==0.11.2
 requests
-litellm==1.82.6
+litellm==1.40.8
 python-dotenv
 numpy
 psycopg2-binary
