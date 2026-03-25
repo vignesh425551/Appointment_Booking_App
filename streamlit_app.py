@@ -4,11 +4,12 @@ import os
 import re
 
 import streamlit as st
+from sqlalchemy.exc import OperationalError as SAOperationalError
 
 st.set_page_config(page_title="Healthcare Appointment Bot", page_icon="🩺", layout="centered")
 
 from db.models import Appointment, Department, Doctor, Slot, User
-from db.session import DATABASE_URL_SOURCE, SessionLocal
+from db.session import DATABASE_URL, DATABASE_URL_SOURCE, DATABASE_URL_SUMMARY, SessionLocal
 from utils.sarvam_integration import SarvamHandler
 
 
@@ -295,7 +296,22 @@ def main():
         )
         return
 
-    departments = get_departments()
+    try:
+        departments = get_departments()
+    except SAOperationalError as e:
+        host = DATABASE_URL_SUMMARY.get("host")
+        dbname = DATABASE_URL_SUMMARY.get("database")
+        port = DATABASE_URL_SUMMARY.get("port")
+        st.error(
+            "Could not connect to the database. "
+            "Check your Streamlit Cloud database secrets / connection settings."
+        )
+        st.info(
+            f"DB source: {DATABASE_URL_SOURCE} | host: {host} | port: {port} | db: {dbname}"
+        )
+        # The full exception is still available in Streamlit Cloud logs ("Manage app").
+        st.write(f"OperationalError: {type(e).__name__}")
+        return
     if not departments:
         st.error("No departments found. Run DB initialization and seeding first.")
         return

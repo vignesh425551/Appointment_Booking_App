@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import tomllib
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -82,3 +83,24 @@ DATABASE_URL, DATABASE_URL_SOURCE = resolve_database_url()
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) 
+
+
+def summarize_database_url(url: str) -> dict[str, str | int | None]:
+    """
+    Extract host/port/db/user from a postgres DSN without exposing the password.
+    """
+    try:
+        parsed = urlparse(url)
+        database = (parsed.path or "").lstrip("/") or None
+        return {
+            "scheme": parsed.scheme or None,
+            "user": parsed.username or None,
+            "host": parsed.hostname or None,
+            "port": parsed.port,
+            "database": database,
+        }
+    except Exception:
+        return {"scheme": None, "user": None, "host": None, "port": None, "database": None}
+
+
+DATABASE_URL_SUMMARY = summarize_database_url(DATABASE_URL)
